@@ -1,5 +1,13 @@
 # Fixed issues
 
+## Session-conflict fixture depended on the host process table
+
+The live-session conflict test mocked the liveness of synthetic PID 111 but read its
+real command from the host. The test could fail on both macOS and Linux when that
+PID was absent or belonged to an unrelated process. It now supplies the matching
+synthetic MCP command as well; production conflict detection is unchanged. The full
+suite runs without a host-specific pytest plugin.
+
 ## Explicit owner-directed recipients could not be configured
 
 Previously disabling the fixed recipient allowlist also triggered the general unsafe
