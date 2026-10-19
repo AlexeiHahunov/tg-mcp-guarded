@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from telethon.tl.types import User
 from .paths import resolve_state_path
 from .limiter import safe_call, get_rate_limiter
+from .send_pacing import pace_outgoing_request
 from .metrics import (
     increment_rate_limit_requests_total,
     increment_rate_limit_throttled_total,
@@ -400,7 +401,8 @@ def _contains_telethon_write_request(request: object) -> bool:
 def _raise_write_guard_error(method_name: str) -> None:
     raise PermissionError(
         f"Direct Telegram write '{method_name}' is blocked by default. "
-        "Use tgmcp-actions (Action MCP) with confirm=true and allowlist. "
+        "Use tgmcp-actions (Action MCP) with confirm=true "
+        "and configured target policy. "
         "For session bootstrap only, set TG_AUTH_BOOTSTRAP=1."
     )
 
@@ -412,6 +414,24 @@ class GuardedTelegramClient(TelegramClient):
         if _contains_telethon_write_request(request) and not _is_direct_write_allowed():
             _raise_write_guard_error(request.__class__.__name__)
         return await super().__call__(request, *args, **kwargs)
+
+    async def _call(self, sender, request, *args, **kwargs):
+        # Telethon also calls _call directly for some message operations.
+        # Guard at this common dispatch boundary, rather than at a tool or a
+        # high-level helper, so ordinary/lane/batch sends share the same slot.
+        if (
+            _contains_telethon_write_request(request)
+            and not _is_direct_write_allowed()
+        ):
+            _raise_write_guard_error(request.__class__.__name__)
+        parent_call = super()._call
+
+        async def dispatch():
+            return await parent_call(sender, request, *args, **kwargs)
+
+        if WRITE_CONTEXT == "actions_mcp" and _is_actions_process():
+            return await pace_outgoing_request(request, dispatch)
+        return await dispatch()
 
     async def send_message(self, *args, **kwargs):
         if not _is_direct_write_allowed():

@@ -25,6 +25,26 @@ def parse_allowlist(raw: str) -> set[str]:
     return values
 
 
+def target_policy_issues(
+    *, target_policy: str, require_allowlist: bool, allowed_targets: set[str]
+) -> list[str]:
+    """Validate the explicit target mode without relaxing other action gates."""
+    if target_policy == "allowlist":
+        if not require_allowlist:
+            return ["TG_ACTIONS_REQUIRE_ALLOWLIST must be 1 in allowlist mode"]
+        if not allowed_targets:
+            return ["TG_ACTIONS_ALLOWED_GROUPS must not be empty when allowlist is required"]
+        return []
+    if target_policy == "owner_directed":
+        issues = []
+        if require_allowlist:
+            issues.append("TG_ACTIONS_REQUIRE_ALLOWLIST must be 0 in owner_directed mode")
+        if allowed_targets:
+            issues.append("TG_ACTIONS_ALLOWED_GROUPS must be empty in owner_directed mode")
+        return issues
+    return ["TG_ACTIONS_TARGET_POLICY must be allowlist or owner_directed"]
+
+
 def hash_payload(payload: dict[str, Any]) -> str:
     """Stable hash for action payload."""
     encoded = json.dumps(
@@ -52,10 +72,11 @@ def detect_unsafe_defaults(
         issues.append("TG_ALLOW_DIRECT_TELETHON_WRITE must stay 0")
     if env.get("TG_ENFORCE_ACTION_PROCESS", "1") != "1":
         issues.append("TG_ENFORCE_ACTION_PROCESS must be 1")
-    if not require_allowlist:
-        issues.append("TG_ACTIONS_REQUIRE_ALLOWLIST must be 1")
-    elif not parse_allowlist(env.get("TG_ACTIONS_ALLOWED_GROUPS", "")):
-        issues.append("TG_ACTIONS_ALLOWED_GROUPS must not be empty when allowlist is required")
+    issues.extend(target_policy_issues(
+        target_policy=env.get("TG_ACTIONS_TARGET_POLICY", "allowlist"),
+        require_allowlist=require_allowlist,
+        allowed_targets=parse_allowlist(env.get("TG_ACTIONS_ALLOWED_GROUPS", "")),
+    ))
     if not require_confirmation_text:
         issues.append("TG_ACTIONS_REQUIRE_CONFIRMATION_TEXT must be 1")
     elif not env.get("TG_ACTIONS_CONFIRMATION_PHRASE", "").strip():

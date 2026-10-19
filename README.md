@@ -305,6 +305,71 @@ Add to your project's `.mcp.json`:
 
 `mcp_server.py` is kept as backward-compatible alias to `mcp_server_read.py`.
 
+### Action target policy
+
+The default `TG_ACTIONS_TARGET_POLICY=allowlist` preserves existing behavior:
+`TG_ACTIONS_REQUIRE_ALLOWLIST=1` and a nonempty `TG_ACTIONS_ALLOWED_GROUPS` are required.
+Omitting the new setting keeps this default. A wildcard is not supported.
+
+An account owner may explicitly choose targets per request instead of maintaining a
+fixed recipient list:
+
+```dotenv
+TG_ACTIONS_TARGET_POLICY=owner_directed
+TG_ACTIONS_REQUIRE_ALLOWLIST=0
+TG_ACTIONS_ALLOWED_GROUPS=
+TG_ACTIONS_UNSAFE_OVERRIDE=0
+```
+
+Restart Actions MCP after changing these settings. `tg_get_actions_policy` reports
+`target_policy`, `require_allowlist`, and `allowed_targets`; verify the chosen mode
+before using it. Empty or unknown modes and inconsistent mode/list settings block
+actions. The open mode accepts nonempty targets; Telegram still controls entity
+resolution and the account's actual permissions.
+
+`owner_directed` changes the central recipient restriction for all Actions tools.
+It does not grant permission to contact people or perform other operations by itself.
+The agent must have the owner's explicit request, resolve the exact recipient, and
+ask if the recipient is ambiguous. Draft requests do not authorize sending. Keep
+separate authorization for files, destructive operations, bots and batches.
+Confirmation, matching dry-run approval, approval delay, idempotency, account/session
+and process guards, rate limits, and approved lane target scopes remain enforced.
+This mode does not need `TG_ACTIONS_UNSAFE_OVERRIDE`.
+
+Validate changes offline from the repository root:
+
+```bash
+python -m pytest tests/test_mcp_actions_policy.py tests/test_mcp_actions_target_policy.py \
+  tests/test_mcp_actions_confirmation.py tests/test_mcp_actions_write_lane.py \
+  tests/test_mcp_server_actions_batch.py tests/test_send_pacing.py
+```
+
+Tests use fake Telegram managers and must not send real messages.
+
+### Optional shared send pacing
+
+`TG_ACTIONS_APPROVAL_MIN_AGE_SEC` controls the age of a dry-run approval. Several
+approvals can mature together, so it does not guarantee a gap between actual sends.
+To require such a gap, set `TG_SEND_MIN_INTERVAL_SEC` to a nonnegative number of
+seconds (for example, `30`). Its default is `0`, preserving existing installations.
+The guard serializes message/file send RPCs at the Actions transport boundary using
+persisted, locked state shared across clients and restarts. It leaves read operations,
+the shared API RPS limit and daily message quotas unchanged. When enabled it rejects
+bulk send requests whose individual messages cannot be spaced safely.
+
+`TG_SEND_PACING_ACCOUNT_ID` selects a stable account namespace; leaving it empty uses
+one conservative shared namespace. State defaults to `TG_DATA_DIR/anti_spam`; an
+explicit `TG_SEND_PACING_DIR` overrides that directory. Clients using the same account
+must share the namespace and state directory. `tg_get_actions_policy` reports the
+effective `send_min_interval_sec` and `send_pacing_scope`.
+
+The cooldown starts after a completed, failed or cancelled dispatch. An in-flight
+marker also forces a full cooldown when a new process recovers an interrupted
+dispatch. Scheduled sends and multi-message RPCs are rejected while pacing is
+enabled because their publication times cannot be spaced safely at this boundary.
+Pacing requires POSIX file locks (macOS/Linux); enabled pacing fails closed when
+that lock support is unavailable.
+
 ### Read Tools
 
 | Tool | Description |
@@ -396,7 +461,7 @@ Add to your project's `.mcp.json`:
 - Batch execution uses a per-batch run lease lock (`TG_ACTIONS_BATCH_RUN_LEASE_SEC`) to avoid duplicate processing of the same batch by two workers.
 - For long tasks, batch mode supports scoped approval: `tg_create_add_member_batch` -> `tg_approve_batch` -> repeat `tg_run_add_member_batch` until complete.
 - Batch run permission is time-limited (`TG_ACTIONS_BATCH_APPROVAL_LEASE_SEC`, default 24h). After lease expiry, re-approve the same batch.
-- Conversational monitoring can use a time-bounded write lane: `tg_create_write_lane` -> human review -> `tg_approve_write_lane` -> `tg_send_message_with_lane` from an external heartbeat. Lane sends remain limited by the static allowlist, account identity, expiry, quotas, per-target interval, message length, link policy, idempotency, global rate limits and immediate revocation.
+- Conversational monitoring can use a time-bounded write lane: `tg_create_write_lane` -> human review -> `tg_approve_write_lane` -> `tg_send_message_with_lane` from an external heartbeat. Lane sends remain limited by the configured target policy, account identity, expiry, quotas, per-target interval, message length, link policy, idempotency, global rate limits, enabled account-wide send pacing and immediate revocation.
 - A write lane delegates text sends only. It never delegates files, forwards, edits, deletes, member actions, new targets, or scheduling. See [Time-bounded Write Lanes](docs/TIME_BOUNDED_WRITE_LANES.md).
 - ActionMCP is fail-closed by default: weakening core safe flags auto-disables actions unless `TG_ACTIONS_UNSAFE_OVERRIDE=1`.
 - If allowlist is required, ActionMCP also fails closed when `TG_ACTIONS_ALLOWED_GROUPS` is empty.

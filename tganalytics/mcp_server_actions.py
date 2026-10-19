@@ -45,6 +45,7 @@ from mcp_actions_policy import (  # noqa: E402
     hash_payload,
     normalize_target,
     parse_allowlist,
+    target_policy_issues,
     validate_confirmation_text,
 )
 from mcp_actions_state import load_json_dict, update_json_dict  # noqa: E402
@@ -65,11 +66,13 @@ from tganalytics.infra.managed_bot import (  # noqa: E402
     CreateManagedBotRequest,
 )
 from tganalytics.infra.metrics import snapshot  # noqa: E402
+from tganalytics.infra.send_pacing import configured_min_interval  # noqa: E402
 
 SERVER_NAME = os.environ.get("TG_MCP_SERVER_NAME", "tganalytics-actions")
 ALLOW_SESSION_SWITCH = os.environ.get("TG_ALLOW_SESSION_SWITCH", "0") == "1"
 ACTIONS_ENABLED = os.environ.get("TG_ACTIONS_ENABLED", "0") == "1"
 REQUIRE_ALLOWLIST = os.environ.get("TG_ACTIONS_REQUIRE_ALLOWLIST", "1") == "1"
+TARGET_POLICY = os.environ.get("TG_ACTIONS_TARGET_POLICY", "allowlist")
 UNSAFE_OVERRIDE = os.environ.get("TG_ACTIONS_UNSAFE_OVERRIDE", "0") == "1"
 
 try:
@@ -242,13 +245,15 @@ ctx = MCPServerContext(
 
 def _check_target_allowed(group: str) -> tuple[bool, str | None]:
     normalized = _normalize_target(group)
-
-    if REQUIRE_ALLOWLIST and not ALLOWED_TARGETS:
-        return (
-            False,
-            "Actions blocked: TG_ACTIONS_REQUIRE_ALLOWLIST=1 but "
-            "TG_ACTIONS_ALLOWED_GROUPS is empty.",
-        )
+    issues = target_policy_issues(
+        target_policy=TARGET_POLICY,
+        require_allowlist=REQUIRE_ALLOWLIST,
+        allowed_targets=ALLOWED_TARGETS,
+    )
+    if issues:
+        return False, "Actions blocked: " + "; ".join(issues)
+    if not normalized:
+        return False, "Actions blocked: target must not be empty."
 
     if ALLOWED_TARGETS and normalized not in ALLOWED_TARGETS:
         return (
@@ -3980,6 +3985,7 @@ async def tg_run_add_member_batch(batch_id: str, max_actions: int = 100) -> dict
 @mcp.tool()
 async def tg_get_actions_policy() -> dict[str, Any]:
     """Return active action policy gates and limits."""
+    send_min_interval = configured_min_interval()
     limiter_stats = get_rate_limiter().get_stats()
     session_path_status = ctx.session_path_status()
     now = int(time.time())
@@ -4000,6 +4006,9 @@ async def tg_get_actions_policy() -> dict[str, Any]:
         "server_profile": "actions",
         "actions_enabled": ACTIONS_ENABLED,
         "require_allowlist": REQUIRE_ALLOWLIST,
+        "target_policy": TARGET_POLICY,
+        "send_min_interval_sec": send_min_interval,
+        "send_pacing_scope": "account" if send_min_interval > 0 else "disabled",
         "allowed_targets": sorted(ALLOWED_TARGETS),
         "max_message_len": MAX_MESSAGE_LEN,
         "max_file_mb": MAX_FILE_MB,
