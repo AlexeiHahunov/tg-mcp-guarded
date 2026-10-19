@@ -23,7 +23,8 @@ Route every Telegram client call through `_safe_api_call`/`safe_call` and verify
 - Telegram write operations must go only through `tgmcp-actions` tools.
 - Direct telethon write (`client.send_message`, `client.send_file`, `client.delete_messages`, etc.) is blocked by default by `tele_client` write guard.
 - Raw MTProto write via `client(Request)` (invite/add/remove/ban/edit/send) is also blocked unless running as Action MCP process.
-- For write actions, keep `TG_ACTIONS_REQUIRE_ALLOWLIST=1` and use explicit targets in `TG_ACTIONS_ALLOWED_GROUPS`.
+- Default write target policy is `allowlist`: keep `TG_ACTIONS_REQUIRE_ALLOWLIST=1` and explicit `TG_ACTIONS_ALLOWED_GROUPS`. An owner may explicitly select `TG_ACTIONS_TARGET_POLICY=owner_directed`, `TG_ACTIONS_REQUIRE_ALLOWLIST=0`, and empty allowed groups instead. This supported mode replaces allowlist-only assumptions in older playbooks; it does not authorize unsolicited writes. Require a clear owner request and exact recipient; ask and wait if the recipient is ambiguous. Never use `TG_ACTIONS_UNSAFE_OVERRIDE` to change the target mode.
+- When `TG_SEND_MIN_INTERVAL_SEC` is enabled, respect the shared account-wide outgoing-message cooldown independently of approval age and lane per-target intervals. Do not bypass it with parallel clients, prepared approvals, scheduled messages or bulk RPCs. All clients of an account must share its pacing namespace and state directory.
 - Non-dry-run action calls require `confirm=true`, exact `confirmation_text`, and one-time `approval_code` from matching `dry_run`.
 - Duplicate write actions are blocked by idempotency window unless `force_resend=true`.
 - For multi-step migrations, prefer batch flow: `tg_create_add_member_batch` -> `tg_approve_batch` -> `tg_run_add_member_batch`.
